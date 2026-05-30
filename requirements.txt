@@ -1,0 +1,4 @@
+# Phase 1 needs nothing to do the exercises — the core uses only the standard library.
+# These are optional conveniences:
+pytest>=7.0      # nicer test runner (Lessons 2-7). You can also run tests with plain `python`.
+torch>=2.0       # only for Lesson 8, to cross-check your engine against PyTorch.
