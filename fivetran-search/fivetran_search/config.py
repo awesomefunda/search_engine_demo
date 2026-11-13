@@ -3,10 +3,18 @@ from __future__ import annotations
 
 import os
 import re
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DATA_DIR = Path(os.environ.get("FTS_DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
+# Deployed source is read-only. Vercel's temporary storage is writable but
+# ephemeral and private to each function instance; it is not a shared cache.
+DEFAULT_DATA_DIR = (
+    Path(tempfile.gettempdir()) / "fivetran-search"
+    if os.environ.get("VERCEL") == "1"
+    else Path(__file__).resolve().parent.parent / "data"
+)
+DATA_DIR = Path(os.environ.get("FTS_DATA_DIR", DEFAULT_DATA_DIR))
 
 # --- URL pattern rules ------------------------------------------------------
 # Deny wins over allow. These are the "patterns" that keep a 50-page budget
