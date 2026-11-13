@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "fivetran-search",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "uvicorn", "fivetran_search.api:app", "--port", "8077"],
+      "port": 8077
+    }
+  ]
+}

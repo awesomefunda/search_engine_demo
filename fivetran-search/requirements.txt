@@ -1,0 +1,9 @@
+# Runtime dependencies. Versions are the ones this was built and verified against.
+requests>=2.32,<3
+beautifulsoup4>=4.13,<5
+lxml>=5.0
+numpy>=2.0,<3
+
+# Only needed to serve the web UI; the CLI runs without them.
+fastapi>=0.115
+uvicorn>=0.30

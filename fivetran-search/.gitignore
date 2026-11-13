@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# Crawl output: the SQLite index and cached LSA artifacts are rebuilt by
+# `python -m fivetran_search.cli crawl`, and they are a copy of someone else's
+# site, so they do not belong in version control.
+data/
+
+# Private correspondence drafts kept alongside the project. Not for a public repo.
+email-to-larry.md
+time-accounting-email.md

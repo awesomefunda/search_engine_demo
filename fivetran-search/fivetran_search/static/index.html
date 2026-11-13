@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fivetran Site Search</title>
+<style>
+  :root {
+    --bg: #fbfbfd; --panel: #ffffff; --ink: #14171f; --muted: #656b7a;
+    --line: #e4e6ec; --accent: #1f6feb; --accent-soft: #eaf1ff;
+    --mark: #fff2a8; --ok: #0f7b4f; --warn: #a2500b;
+    --radius: 12px; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1115; --panel: #171a21; --ink: #e8eaf0; --muted: #9aa1b1;
+      --line: #272b35; --accent: #6ea8fe; --accent-soft: #1b2535;
+      --mark: #5a4b12; --ok: #4ec98a; --warn: #e0a252;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 820px; margin: 0 auto; padding: 32px 16px 64px; }
+  header h1 { font-size: 20px; margin: 0 0 2px; letter-spacing: -0.01em; }
+  header p { margin: 0 0 20px; color: var(--muted); font-size: 13px; }
+
+  form { display: flex; gap: 8px; }
+  input[type=search] {
+    flex: 1; padding: 13px 15px; font-size: 15px; color: var(--ink);
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); outline: none;
+  }
+  input[type=search]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  button {
+    padding: 13px 18px; font-size: 14px; font-weight: 600; cursor: pointer;
+    color: #fff; background: var(--accent); border: 1px solid transparent;
+    border-radius: var(--radius);
+  }
+  button.ghost { background: var(--panel); color: var(--ink); border-color: var(--line); font-weight: 500; }
+  button:disabled { opacity: .45; cursor: default; }
+
+  .examples { margin: 10px 0 0; display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    font-size: 12px; padding: 5px 10px; border-radius: 999px; cursor: pointer;
+    background: var(--panel); border: 1px solid var(--line); color: var(--muted);
+  }
+  .chip:hover { border-color: var(--accent); color: var(--accent); }
+
+  .statusbar {
+    margin: 20px 0 6px; padding: 10px 12px; border: 1px solid var(--line);
+    border-radius: var(--radius); background: var(--panel);
+    font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px 14px;
+    align-items: center;
+  }
+  .statusbar b { color: var(--ink); font-weight: 600; }
+  .tag {
+    font-family: var(--mono); font-size: 11px; padding: 2px 7px; border-radius: 6px;
+    background: var(--accent-soft); color: var(--accent);
+  }
+  .tag.hit { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
+  .tag.miss { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+  .spacer { flex: 1; }
+
+  .note { font-size: 13px; color: var(--warn); margin: 8px 0; }
+  ol.results { list-style: none; padding: 0; margin: 10px 0 0; }
+  li.result {
+    padding: 16px 0; border-bottom: 1px solid var(--line);
+    display: grid; grid-template-columns: 34px 1fr; gap: 0 12px;
+  }
+  .rank { color: var(--muted); font-family: var(--mono); font-size: 13px; padding-top: 2px; }
+  .result a.title {
+    color: var(--accent); text-decoration: none; font-size: 16px; font-weight: 600;
+    display: block; margin-bottom: 2px;
+  }
+  .result a.title:hover { text-decoration: underline; }
+  .url { font-size: 12px; color: var(--ok); word-break: break-all; margin-bottom: 6px; }
+  .snippet { font-size: 14px; color: var(--ink); }
+  .snippet mark { background: var(--mark); color: inherit; padding: 0 1px; border-radius: 2px; }
+  .meta { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .bar { width: 72px; height: 5px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--accent); }
+  .dupes { font-size: 11px; color: var(--muted); cursor: help; border-bottom: 1px dotted var(--line); }
+  .why {
+    margin-top: 8px; font-family: var(--mono); font-size: 11px; color: var(--muted);
+    display: none; gap: 10px; flex-wrap: wrap;
+  }
+  li.result.show-why .why { display: flex; }
+  .linkish {
+    background: none; border: 0; padding: 0; font-size: 12px; color: var(--muted);
+    cursor: pointer; text-decoration: underline; font-weight: 500;
+  }
+  .pager { display: flex; gap: 8px; align-items: center; margin-top: 22px; }
+  /* A bare [hidden] loses to display:flex, so the pager needs this explicitly. */
+  .pager[hidden] { display: none; }
+  .pager span { font-size: 13px; color: var(--muted); }
+  .empty { padding: 36px 4px; color: var(--muted); }
+  .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--line);
+    border-top-color: var(--accent); border-radius: 50%; animation: s .7s linear infinite; }
+  @keyframes s { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Fivetran Site Search</h1>
+    <p>Keyword + semantic search over a bounded crawl of fivetran.com. Cursor paginated, 10 per page.</p>
+  </header>
+
+  <form id="f">
+    <input id="q" type="search" placeholder="Type a keyword or a whole question…"
+           autocomplete="off" autofocus>
+    <button type="submit">Search</button>
+  </form>
+  <div class="examples" id="examples"></div>
+
+  <div class="statusbar" id="status">
+    <span class="spin"></span> loading corpus status…
+  </div>
+
+  <div id="notes"></div>
+  <ol class="results" id="results"></ol>
+  <div class="pager" id="pager" hidden>
+    <button class="ghost" id="prev">&larr; Previous</button>
+    <button class="ghost" id="next">Next &rarr;</button>
+    <span id="range"></span>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const state = { query: "", next: null, prev: null, firstPage: true };
+
+const EXAMPLES = [
+  "how much does it cost",
+  "salesforce connector",
+  "data pipeline security and compliance",
+  "\"change data capture\"",
+  "which databases can I replicate from",
+];
+
+function escapeHtml(s) {
+  return (s || "").replace(/[&<>\"']/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
+function highlight(text, terms) {
+  let html = escapeHtml(text);
+  const uniq = [...new Set((terms || []).filter((t) => t && t.length > 2))];
+  uniq.sort((a, b) => b.length - a.length);
+  for (const t of uniq) {
+    const safe = t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    html = html.replace(new RegExp(`(${safe}\\w*)`, "gi"), "<mark>$1</mark>");
+  }
+  return html;
+}
+
+function renderStatus(data, resp) {
+  const bits = [];
+  if (resp) {
+    bits.push(`<b>${resp.total_results}</b> results`);
+    const c = resp.cache || {};
+    bits.push(`<span class="tag ${c.crawl_skipped ? "hit" : "miss"}">crawl ${c.crawl_skipped ? "skipped (cached)" : "ran"}</span>`);
+    bits.push(`<span class="tag ${c.index === "rebuilt" ? "miss" : "hit"}">index ${c.index}</span>`);
+    bits.push(`<span class="tag ${c.query_snapshot === "hit" ? "hit" : "miss"}">snapshot ${c.query_snapshot}</span>`);
+    bits.push(`<span class="spacer"></span>`);
+    bits.push(`<b>${resp.timings_ms.total} ms</b>`);
+    bits.push(`${resp.corpus.pages} pages / ${resp.corpus.chunks} chunks`);
+  } else if (data) {
+    bits.push(`<b>${data.pages}</b> pages indexed`);
+    bits.push(`${data.chunks} chunks`);
+    bits.push(`<span class="tag ${data.corpus_fresh ? "hit" : "miss"}">${data.corpus_fresh ? "corpus fresh" : "corpus stale"}</span>`);
+    bits.push(`<span class="tag ${data.index_artifact_cached ? "hit" : "miss"}">index ${data.index_artifact_cached ? "cached" : "not built"}</span>`);
+    bits.push(`<span class="spacer"></span>`);
+    bits.push(`<span class="tag">v${(data.corpus_version || "").slice(0, 8)}</span>`);
+  }
+  $("status").innerHTML = bits.join(" ");
+}
+
+function render(resp) {
+  renderStatus(null, resp);
+
+  $("notes").innerHTML = (resp.warnings || [])
+    .map((w) => `<div class="note">${escapeHtml(w)}</div>`).join("");
+
+  const top = resp.results.length ? resp.results[0].score : 1;
+  $("results").innerHTML = resp.results.map((r, i) => {
+    const pct = Math.max(6, Math.round((r.score / (top || 1)) * 100));
+    const feats = Object.entries(r.features)
+      .filter(([k]) => k !== "rrf")
+      .map(([k, v]) => `${k} ${v.toFixed(2)}`).join("  ·  ");
+    return `<li class="result">
+      <div class="rank">${resp.offset + i + 1}</div>
+      <div>
+        <a class="title" href="${escapeHtml(r.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(r.title)}</a>
+        <div class="url">${escapeHtml(r.url)}</div>
+        <div class="snippet">${highlight(r.snippet, r.matched_terms)}</div>
+        <div class="meta">
+          <div class="bar" title="relevance ${r.score.toFixed(4)}"><i style="width:${pct}%"></i></div>
+          ${r.sources.map((s) => `<span class="tag">${escapeHtml(s)}</span>`).join("")}
+          <button class="linkish" data-why="${i}">why this rank</button>
+          ${r.near_duplicates && r.near_duplicates.length
+            ? `<span class="dupes" title="${escapeHtml(r.near_duplicates.join("\n"))}">+${r.near_duplicates.length} duplicate ${r.near_duplicates.length === 1 ? "page" : "pages"} collapsed</span>`
+            : ""}
+        </div>
+        <div class="why">${escapeHtml(feats)}</div>
+      </div>
+    </li>`;
+  }).join("") || `<div class="empty">No results. Try fewer words, or a different phrasing.</div>`;
+
+  $("results").querySelectorAll("[data-why]").forEach((btn) => {
+    btn.onclick = () => btn.closest("li.result").classList.toggle("show-why");
+  });
+
+  state.next = resp.next_cursor;
+  state.prev = resp.prev_cursor;
+  state.firstPage = resp.offset === 0;
+  const shown = resp.results.length;
+  $("pager").hidden = resp.total_results <= shown && resp.offset === 0;
+  $("next").disabled = !resp.next_cursor;
+  $("prev").disabled = resp.offset === 0;
+  $("range").textContent = shown
+    ? `${resp.offset + 1}–${resp.offset + shown} of ${resp.total_results}`
+    : "";
+}
+
+async function run(cursor) {
+  $("status").innerHTML = '<span class="spin"></span> searching…';
+  const params = new URLSearchParams({ q: state.query, page_size: "10" });
+  if (cursor) params.set("cursor", cursor);
+  try {
+    const res = await fetch(`/api/search?${params}`);
+    if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+    render(await res.json());
+  } catch (err) {
+    $("status").innerHTML = `<span class="tag miss">error</span> ${escapeHtml(String(err.message || err))}`;
+  }
+}
+
+$("f").onsubmit = (e) => {
+  e.preventDefault();
+  const q = $("q").value.trim();
+  if (!q) return;
+  state.query = q;
+  // Keep the query in the address bar so a search can be linked or reloaded.
+  history.replaceState(null, "", `?q=${encodeURIComponent(q)}`);
+  run(null);
+};
+$("next").onclick = () => state.next && run(state.next);
+$("prev").onclick = () => run(state.prev);  // null cursor == back to page 1
+
+$("examples").innerHTML = EXAMPLES
+  .map((e) => `<span class="chip">${escapeHtml(e)}</span>`).join("");
+$("examples").querySelectorAll(".chip").forEach((chip) => {
+  chip.onclick = () => { $("q").value = chip.textContent; $("f").requestSubmit(); };
+});
+
+// A ?q= in the URL runs that search on load.
+const initialQuery = new URLSearchParams(location.search).get("q");
+if (initialQuery && initialQuery.trim()) {
+  $("q").value = initialQuery;
+  state.query = initialQuery.trim();
+  run(null);
+} else {
+  fetch("/api/status").then((r) => r.json()).then((d) => renderStatus(d, null))
+    .catch(() => { $("status").textContent = "backend unreachable"; });
+}
+</script>
+</body>
+</html>
