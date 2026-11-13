@@ -1,253 +1,187 @@
-# Fivetran Site Search (MVP)
+# Fivetran Site Search — Technical Overview
 
-A lightweight internal search engine over a bounded crawl of `fivetran.com`.
-Type a keyword or a whole sentence; get relevance-ordered results, 10 per page,
-cursor paginated. Runs entirely locally: no API keys, no model downloads, no
-services beyond Python.
+A Python MVP for keyword and natural-language search over a bounded crawl of
+`fivetran.com`. The browser UI returns ranked links with snippets, explains the
+ranking features, and supports cursor-based navigation with 10 results per page.
 
-```bash
-pip install requests beautifulsoup4 lxml numpy fastapi uvicorn
+[Hosted demo](https://search-engine-demo.vercel.app/) ·
+[Repository overview](../README.md) · [Deployment guide](DEPLOYMENT.md)
 
-python -m fivetran_search.cli crawl            # build the corpus (50 pages)
-uvicorn fivetran_search.api:app --port 8000    # UI at http://localhost:8000
+> The hosted application builds successfully. The latest runtime crawl reported
+> `robots_blocked: 1` for its starting URL and indexed zero pages, so hosted
+> search currently has no corpus. A permitted successful crawl or provisioned
+> corpus is required to demonstrate results.
+
+## Quick start
+
+From this directory, using Python 3.12:
+
+```sh
+python -m pip install -r requirements.txt
+python -m fivetran_search.cli crawl
+uvicorn app:app --host 127.0.0.1 --port 8000
 ```
 
-CLI, if you prefer it:
+Open <http://localhost:8000>. Crawling requires internet access and permission
+under the site's robots policy. Review the crawl report to confirm pages were
+indexed. The first search also attempts a crawl if the corpus is missing or
+stale; subsequent searches reuse a sufficiently complete, fresh corpus.
 
-```bash
-python -m fivetran_search.cli search "how much does it cost" --features
-python -m fivetran_search.cli search "salesforce connector" --page 2
+CLI examples:
+
+```sh
 python -m fivetran_search.cli status
+python -m fivetran_search.cli search "salesforce connector" --features
+python -m fivetran_search.cli search "data pipeline" --page 2
 ```
 
-## How a query is served
+## Request flow
 
-```
-  "how much does this cost"
-          |
-   SearchService.search()                    <- single facade, used by UI/API/CLI
-          |
-   1. ensure_corpus()        crawl ONLY if the corpus is missing or past TTL
-   2. ensure_index()         rebuild LSA ONLY if corpus_version changed
-   3. query snapshot?        hit  -> reuse the ranked list verbatim
-          |                  miss -> 4,5,6
-   4. retrieve (recall)      BM25 over FTS5   +   LSA cosine over chunks
-   5. fuse                   reciprocal rank fusion -> top 50 candidates
-   6. rerank (precision)     phrase / title / coverage / proximity / authority
-          |
-   7. keyset page            10 rows after the cursor's sort key
-```
+1. **Ensure the corpus:** reuse fresh pages, otherwise run the bounded crawler.
+2. **Ensure the semantic index:** reuse memory or disk artifacts when the corpus
+   version matches; rebuild only when needed.
+3. **Check the query cache:** reuse a ranked snapshot for the normalized query
+   and corpus version within its TTL.
+4. **Retrieve candidates:** combine field-weighted BM25 with chunk-level LSA
+   similarity, then use reciprocal rank fusion to select up to 50 candidates.
+5. **Rerank and deduplicate:** score relevance features and collapse results
+   sharing the same extracted-text hash.
+6. **Paginate:** return rows after the cursor's score and document-ID key.
 
-Retrieve-wide then rank-narrow is the standard split: step 4 is cheap and runs
-over everything, step 6 is expensive but only ever sees ~50 documents.
+## Crawling and extraction
 
-## Crawling
+The crawler starts at `https://www.fivetran.com/` and recursively follows
+in-scope links, preferring shallow, useful paths. Defaults limit traversal to
+50 indexed pages, depth 4, and a separate request budget. Failed requests and
+non-HTML responses do not consume an indexed-page slot.
 
-Breadth-first from `https://www.fivetran.com/`, following links on child pages
-recursively, synchronous by design.
+URL normalization removes fragments and tracking parameters, canonicalizes the
+host, and reduces duplicate URLs. Allow/deny patterns exclude assets, selected
+locale paths, and routes such as login or search. The fetcher checks robots
+rules, applies a minimum request delay, uses timeouts, and retries transient
+connection failures. Links are extracted before navigation boilerplate is
+removed from searchable text.
 
-- **Budget counts indexed pages, not requests.** A 404 or a non-HTML response
-  must not spend one of the 50 slots. A separate request cap (`4x` the page
-  budget) bounds total work.
-- **Frontier is a priority queue** on `(depth, path_priority, url)`, so the
-  budget is spent on shallow, high-value paths (`/pricing`, `/connectors`,
-  `/docs`, `/security`) before it wanders into deep archives.
-- **robots.txt is honored** per host via `urllib.robotparser`, including
-  `Crawl-delay`, with a 0.5 s politeness floor between requests and a generic
-  bot User-Agent.
-- **URL normalization** collapses the ways one page can be addressed: scheme,
-  host spelling, trailing slash, duplicate slashes, `#fragment`, and tracking
-  params (`utm_*`, `gclid`, ...). Remaining query params are sorted so key
-  order cannot create a duplicate.
-- **Canonical host matters here.** `fivetran.com` and `www.fivetran.com` are the
-  same site and must collapse to one host, but the apex returns **404** for most
-  paths that `www` serves. Normalizing to the apex silently cost 32 of 50 pages
-  before this was caught; the canonical host is configurable for exactly that
-  reason.
-- **Deny patterns** keep the budget on content: assets, locale trees (`/ja`,
-  `/jp`), `/search`, `/login`, `/dashboard`, blog pagination.
-- **Link extraction happens before boilerplate removal** (nav menus are the
-  cheapest route to a site's top-level pages); text extraction happens after it,
-  preferring `<main>`.
+## Retrieval and ranking choices
 
-## Caching: four layers
-
-The requirement was that a later query must not re-crawl unless it has to.
-Each layer has a different invalidation key, which is the part that matters.
-
-| Layer | Key | Invalidated by | What it saves |
-|---|---|---|---|
-| 1. HTTP revalidation | `ETag` / `Last-Modified` per URL | server says `200` instead of `304` | download + parse |
-| 2. Page freshness | `pages.fetched_at` vs `page_ttl_seconds` | TTL expiry | the request entirely |
-| 3. Corpus gate | page count + oldest `fetched_at` | `corpus_ttl_seconds` | **the whole crawl** |
-| 4. Index artifacts | `corpus_version` | any real content change, or a `parser_version` bump | the SVD rebuild |
-| 5. Query snapshot | `(query_key, corpus_version)` | content change or `query_cache_ttl` | retrieval + reranking |
-
-`corpus_version` is a content-addressed fingerprint: `blake2b` over sorted
-`(url, content_hash)` pairs, where `content_hash` is taken over **extracted
-text**, not raw HTML. So a rotating build id or CSRF token in the markup does
-not count as a change, a `304` does not change it, and an unchanged site after
-a recrawl leaves every downstream cache valid.
-
-Consequence: a cold first query crawls; every later query for the next 24 h
-answers from SQLite, and page 2 of any query is one row read. Measured on the
-live corpus: 937 ms cold, 17 ms on a snapshot hit, 1.5 ms once the index is also
-resident in process.
-
-**The cache can be too good.** After `extract.py` was changed to drop nav
-mega-menu headings, a forced recrawl returned 46 `304 Not Modified` responses and
-kept the *old* extraction: the site had not changed, but the parser had. So
-`parser_version` is a separate invalidation axis. When it differs from what the
-store recorded, the next crawl refetches without validators, because a 304 would
-hand back text parsed by the previous version.
-
-## Ranking
-
-**Keyword (BM25).** SQLite FTS5 with a Porter tokenizer. Fields are separate
-columns so `bm25()` can weight them: title 8, headings 3, meta 2, url 2, body 1.
-Query terms are OR-ed for recall, and the full input is also offered as a phrase
-so intact matches score higher. Quoted input becomes a required phrase.
-
-**Semantic (TF-IDF + LSA).** Pages are chunked into ~110-word overlapping
-windows; chunks are TF-IDF vectors reduced to 96 dimensions by a randomized
-truncated SVD, and a query is projected into the same space. Chunk scores are
-max-pooled to page level, so one strongly matching passage is enough.
-
-LSA rather than a transformer because the constraint was no API key and no model
-download, and it still bridges vocabulary: *"how much will this cost me"* ranks
-`/pricing` first with no shared keyword, because *cost*, *pricing* and *MAR*
-co-occur across the corpus. `EmbeddingIndex` is a Strategy — a
-sentence-transformers backend can replace it without the query path changing.
-Randomized SVD keeps a rebuild at `O(nnz * k)` instead of `O(n^2 V)`.
-
-**Fusion (RRF).** `1/(60 + rank)` summed per retriever. Ranks, not raw scores:
-BM25 output is unbounded (and SQLite's is signed), cosine is `[-1, 1]`, so the
-two are not comparable on value. RRF also rewards agreement between retrievers,
-which is the signal that a document is genuinely on-topic.
-
-**Rerank.** A documented linear blend over the ~50 fused candidates:
-
-| Feature | Weight | Signal |
+| Component | Implementation and rationale | Tradeoff |
 |---|---|---|
-| `lexical` | 0.30 | BM25, min-max normalized within the candidate set |
-| `semantic` | 0.26 | best chunk cosine |
-| `phrase` | 0.16 | exact phrase: 1.0 in title/headings, 0.6 in body |
-| `title` | 0.12 | query-term overlap with title + headings |
-| `coverage` | 0.10 | fraction of query terms present at all |
-| `proximity` | 0.04 | shortest window containing every query term |
-| `authority` | 0.02 | inlink count + shallow depth |
+| Document store and keyword index | SQLite + FTS5: one embedded database for a small corpus, BM25, and cached snapshots | Local storage; no shared serverless persistence |
+| Keyword retrieval | Field-weighted BM25 with stemming; title and headings receive higher weights | Vocabulary-dependent |
+| Semantic retrieval | TF-IDF + randomized truncated SVD/LSA over overlapping text chunks; best chunk score represents a page | Relations come only from this small corpus |
+| Candidate fusion | Reciprocal rank fusion combines retrieval ranks rather than incompatible raw score scales | Fusion is a candidate selection stage |
+| Final ranking | Inspectable weighted features over the fused candidate set | Hand-set weights need relevance evaluation |
 
-Linear and inspectable beats a learned reranker at MVP scale: every result
-carries its own `features` dict, and the UI's "why this rank" exposes it. The
-weights are a starting point to be tuned against judgments, not a claim of
-optimality.
+LSA uses up to 96 dimensions and approximately 110-word chunks with 30-word
+overlap. It needs no external inference API or downloaded model. It can capture
+corpus-specific word associations, but sentence queries are not guaranteed to
+match when their vocabulary is absent from the corpus.
 
-**Near-duplicate collapsing.** Ranked results are then deduplicated on the
-extracted-text hash. Four `/industries?tab=*` URLs return byte-identical HTML
-because the tabs switch client side, and without this they took four of the ten
-slots on the first page. The best-scoring URL wins and the rest are reported on
-it as `near_duplicates`, which the UI shows as "+3 duplicate pages collapsed".
+The final score uses the following configured weights:
+
+| Feature | Weight |
+|---|---:|
+| Normalized keyword score | 0.30 |
+| Best-chunk semantic similarity | 0.26 |
+| Exact phrase match | 0.16 |
+| Title and heading overlap | 0.12 |
+| Query-term coverage | 0.10 |
+| Term proximity | 0.04 |
+| Link/depth authority | 0.02 |
+
+Each result exposes its feature values in **why this rank**. Duplicate collapsing
+uses extracted-text hashes; it identifies identical extracted content rather
+than general fuzzy similarity.
+
+## Caching and invalidation
+
+| Layer | Reuse condition | Work avoided |
+|---|---|---|
+| HTTP revalidation | ETag or Last-Modified returns 304 | Downloading and parsing unchanged content |
+| Page freshness | Page remains within its TTL | Fetching that page |
+| Corpus freshness | Sufficient page count and fresh fetch timestamps | A complete crawl |
+| Semantic artifacts | Matching corpus version, in memory or on disk | Rebuilding the semantic index |
+| Query snapshots | Matching normalized query and corpus version within the cache TTL | Retrieval and reranking |
+
+Defaults are 24 hours for page/corpus freshness and 15 minutes for query
+snapshots. A content fingerprint versions the corpus, so fetching unchanged
+content does not invalidate downstream caches. A parser version prompts a
+refetch when extraction logic changes.
 
 ## Cursor pagination
 
-Offset pagination over a live ranking drifts — if the index changes between page
-1 and page 2, rows shift and the user sees duplicates or gaps. Instead:
+A ranked snapshot is ordered by descending score and ascending document ID to
+break ties deterministically. The cursor encodes the query key, corpus version,
+and last result's sort key, plus a navigation offset. The API returns
+`next_cursor` and `prev_cursor`; the browser defaults to 10 results per page.
 
-1. the full ranked list is computed once and **snapshotted** under
-   `(query_key, corpus_version)`;
-2. the cursor carries the **sort key of the last row served** —
-   `{query_key, corpus_version, last_score, last_page_id, offset}`,
-   base64url JSON;
-3. the next page is a keyset scan for rows strictly after that key.
-
-Details that make it correct rather than approximately correct:
-
-- **Total order.** Sorting on score alone is not a total order; ties would make
-  two rows mutually "after" each other. The key is `(-score, page_id)`.
-- **Cursor is scoped to its query.** A cursor from another query is rejected
-  rather than applied to the wrong ranking.
-- **Staleness is reported, not hidden.** A cursor minted against a different
-  `corpus_version` returns page 1 with `cursor_stale: true`, instead of
-  silently indexing into a ranking that no longer exists.
-- **Pagination never crawls.** A request carrying a cursor skips the corpus gate
-  outright, so page 2 cannot be ranked against a corpus page 1 never saw.
-- Backward paging works the same way (`prev_cursor`); page 1 needs no cursor, so
-  `prev_cursor` is `null` there.
+Cursor requests skip crawling. A cursor for another query restarts at page one;
+a changed corpus reports `cursor_stale` and restarts. Expired snapshots can be
+recomputed. Cursors are encoded, not signed. Continuity depends on access to
+the same corpus and snapshots, which temporary serverless storage cannot
+provide reliably across instances.
 
 ## API
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/search?q=&cursor=&page_size=` | the query path |
-| `GET /api/status` | corpus size, freshness, `corpus_version`, cache state |
-| `POST /api/refresh?force=true` | recrawl, purge query snapshots, rebuild index |
+| `GET /` | Browser UI |
+| `GET /api/search?q=...&cursor=...&page_size=10` | Ranked results and pagination cursors |
+| `GET /api/status` | Corpus size, freshness, version, and index state |
+| `POST /api/refresh?force=true` | Recrawl and refresh search artifacts |
+| `GET /docs` | Interactive API documentation |
 
-A search response reports `results`, `total_results`, `offset`, `next_cursor`,
-`prev_cursor`, `cursor_stale`, plus `cache` (which layers hit) and `timings_ms`
-per stage — the UI's status bar is just that data rendered.
+Search responses include results, cursors, cache information, warnings, and
+stage timings. The refresh endpoint is intended for demo administration and
+requires access controls or removal for a public production service.
 
-## Layout
+## Code organization
 
-```
-fivetran_search/
-  config.py      settings, URL allow/deny patterns, rerank weights
-  urls.py        normalization + scope rules
-  fetcher.py     polite HTTP, robots.txt, conditional GET, one retry
-  extract.py     HTML -> fielded doc + outlinks + chunks
-  crawler.py     BFS frontier, page budget, cache-aside corpus gate
-  store.py       SQLite repository (pages, links, chunks, FTS5, caches)
-  lexical.py     query -> FTS5 expression -> BM25
-  semantic.py    TF-IDF + randomized SVD (hand-rolled CSR, no scipy)
-  textutil.py    tokenizer, stemmer, min-window span
-  fuse.py        reciprocal rank fusion
-  rerank.py      feature scorer + snippet selection
-  pagination.py  cursor encode/decode, keyset scan
-  pipeline.py    SearchService facade
-  api.py         FastAPI + static UI
-  cli.py         crawl / search / status
-  static/index.html
-tests/test_search.py
-```
+| Module | Responsibility |
+|---|---|
+| `app.py`, `fivetran_search/api.py` | Vercel entrypoint, FastAPI routes, and UI serving |
+| `config.py`, `urls.py` | Settings, scope, normalization, and URL patterns |
+| `fetcher.py`, `crawler.py`, `extract.py` | HTTP fetching, traversal, parsing, and chunking |
+| `store.py` | SQLite repository and persistence |
+| `lexical.py`, `semantic.py`, `fuse.py`, `rerank.py` | Retrieval and relevance pipeline |
+| `pagination.py`, `pipeline.py` | Cursor handling and search orchestration |
+| `cli.py`, `static/index.html` | CLI and browser UI |
 
-Patterns in use: **Repository** (`Store` owns all SQL), **Facade**
-(`SearchService`), **Strategy** (retrievers and the embedding backend),
-**Pipeline** (retrieve -> fuse -> rerank -> paginate), **Cache-aside** (every
-layer above), **Value object** (immutable `Cursor`).
+Module paths in the table are relative to `fivetran_search/` unless explicitly
+qualified. The design separates persistence through a repository, orchestrates
+queries through a service facade, and uses cache-aside checks around expensive
+stages. Retrieval, fusion, and reranking remain separate to support iteration.
 
-## Tests
+## Validation
 
-```bash
-python -m tests.test_search
+```sh
+python -m unittest discover -s tests -v
 ```
 
-33 tests, no network: they build a synthetic corpus in a temp SQLite file and
-inject a crawler stub. Covered: URL normalization and scope, HTML extraction and
-chunk overlap, FTS expression building (including malformed input that must not
-break the MATCH parser), RRF, LSA matching a query with no shared keywords,
-artifact cache round-trip, duplicate collapsing, cursor round-trip and garbage
-rejection, score ties, a full forward walk that must cover every row exactly once
-with no repeats, cross-query and stale cursor handling, and that each cache layer
-hits when it should.
+All 33 offline tests pass in the local validation run. They cover URL handling,
+HTML extraction, chunking, keyword expressions, semantic matching on a synthetic
+corpus, fusion, deduplication, cache reuse, artifact round trips, and cursor
+navigation including ties, query mismatches, and stale versions. These tests do
+not verify live site availability, hosted crawl permission, or relevance across
+arbitrary queries.
 
-The UI was verified in a browser end to end: page 1 to page 2 shows ranks 11-20
-with zero URL overlap, Previous round-trips to exactly the page 1 result set and
-disables itself there, the empty state renders for a no-match query, and the
-status bar reports which cache layers served the request.
+## Deployment and limitations
 
-## Known limits
+Vercel must use **Root Directory: `fivetran-search`** and the FastAPI preset.
+The root `app.py` exports the application, while runtime SQLite and artifacts use
+temporary storage when `VERCEL=1`. See [DEPLOYMENT.md](DEPLOYMENT.md).
 
-- **Client-rendered pages.** The site is Webflow-rendered; some listing pages
-  expose few static anchors, and a number of linked paths 404 for a non-JS
-  client. Link-based BFS still finds >1300 in-scope URLs, so the 50-page budget
-  is the binding constraint, not discovery. `sitemap.xml` and the site's
-  `llms.txt` are both advertised in `robots.txt` and would be the natural
-  frontier backstop if discovery ever starved.
-- **LSA is corpus-bound.** It can only relate terms that co-occur in the 50
-  crawled pages. A real deployment would swap in sentence embeddings behind the
-  same interface.
-- **Single process, single writer.** SQLite + an in-process index is right for
-  50 pages and wrong for 50,000; at that size the index moves out and the
-  snapshot cache becomes Redis.
-- **Rerank weights are hand-set**, not fit to relevance judgments.
-- `max_depth` is 4 and the frontier is re-derived per crawl rather than
-  persisted, so a resumed crawl re-walks known pages (cheaply, via layer 2).
+- The live crawler currently reports a robots-policy block at the seed URL.
+  Crawling must respect site permissions; the application does not bypass them.
+- Crawls are synchronous. A cold search can be slow or exceed function limits.
+- Temporary files are instance-local and disappear on recycling. Durable shared
+  storage is needed for reliable hosted cache reuse and pagination.
+- Only the bounded corpus is searchable. Client-rendered content may be missed.
+- Ranking uses corpus-bound LSA and heuristic weights without a labeled
+  relevance benchmark. An embedding model and evaluated reranker are potential
+  next steps, not current capabilities.
+- The MVP is designed for a small corpus and a single writable store. Background
+  crawl jobs, shared persistence, operational monitoring, and admin access
+  controls are the next steps for a production deployment.
+
+This independent demonstration project is not affiliated with Fivetran.
