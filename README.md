@@ -8,11 +8,10 @@ navigate with cursor-based pagination at 10 results per page.
 [Technical documentation](fivetran-search/README.md) ·
 [Deployment guide](fivetran-search/DEPLOYMENT.md)
 
-> **Hosted demo status:** The application deploys successfully, but the latest
-> live crawl indexed no pages: its robots policy check blocked the starting URL.
-> Hosted search currently returns an empty corpus. Local operation requires a
-> successful crawl; the hosted demo needs a permitted crawl or a provisioned
-> corpus before it can demonstrate search results.
+> **Try the demo:** Search for `data` or `how much does it cost`, then use
+> Next/Previous to navigate. A live 50-page crawl, keyword and sentence search,
+> ranking explanations, and cached pagination have been verified. A cold
+> instance may take about 30 seconds for its initial crawl.
 
 ## What the MVP implements
 
@@ -30,7 +29,7 @@ No external model API, API key, or model download is required.
 
 ## Run locally
 
-Use Python 3.12, matching the hosted deployment runtime.
+Use Python 3.14, matching the hosted deployment runtime.
 
 ```sh
 git clone https://github.com/awesomefunda/search_engine_demo.git
