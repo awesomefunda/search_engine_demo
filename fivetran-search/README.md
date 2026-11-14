@@ -7,14 +7,13 @@ ranking features, and supports cursor-based navigation with 10 results per page.
 [Hosted demo](https://search-engine-demo.vercel.app/) ·
 [Repository overview](../README.md) · [Deployment guide](DEPLOYMENT.md)
 
-> The hosted application builds successfully. The latest runtime crawl reported
-> `robots_blocked: 1` for its starting URL and indexed zero pages, so hosted
-> search currently has no corpus. A permitted successful crawl or provisioned
-> corpus is required to demonstrate results.
+> The hosted demo has been verified with a live 50-page crawl, keyword and
+> sentence queries, cached requests, and forward/backward pagination. A cold
+> instance takes about 30 seconds to crawl; subsequent queries reuse its corpus.
 
 ## Quick start
 
-From this directory, using Python 3.12:
+From this directory, using Python 3.14:
 
 ```sh
 python -m pip install -r requirements.txt
@@ -171,8 +170,9 @@ Vercel must use **Root Directory: `fivetran-search`** and the FastAPI preset.
 The root `app.py` exports the application, while runtime SQLite and artifacts use
 temporary storage when `VERCEL=1`. See [DEPLOYMENT.md](DEPLOYMENT.md).
 
-- The live crawler currently reports a robots-policy block at the seed URL.
-  Crawling must respect site permissions; the application does not bypass them.
+- Python 3.14 is pinned in `.python-version`: older standard-library robots
+  parsers can collapse the site's `Disallow: /?` rule to `/`, incorrectly blocking
+  the homepage. The pinned runtime preserves the rule; robots checks remain enabled.
 - Crawls are synchronous. A cold search can be slow or exceed function limits.
 - Temporary files are instance-local and disappear on recycling. Durable shared
   storage is needed for reliable hosted cache reuse and pagination.
